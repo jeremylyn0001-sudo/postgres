@@ -42,6 +42,7 @@
 #include "commands/user.h"
 #include "commands/vacuum.h"
 #include "common/scram-common.h"
+#include "executor/halo_pmc.h"
 #include "jit/jit.h"
 #include "libpq/auth.h"
 #include "libpq/libpq.h"
@@ -3806,6 +3807,16 @@ struct config_real ConfigureNamesReal[] =
 
 struct config_string ConfigureNamesString[] =
 {
+	{
+		{"halo_pmc_list", PGC_USERSET, STATS_MONITORING,
+			gettext_noop("Selects performance counters for private hash builds."),
+			NULL,
+			GUC_LIST_INPUT
+		},
+		&halo_pmc_list,
+		"",
+		NULL, NULL, NULL
+	},
 	{
 		{"archive_command", PGC_SIGHUP, WAL_ARCHIVING,
 			gettext_noop("Sets the shell command that will be called to archive a WAL file."),

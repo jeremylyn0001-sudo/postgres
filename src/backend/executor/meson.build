@@ -19,6 +19,7 @@ backend_sources += files(
   'execTuples.c',
   'execUtils.c',
   'functions.c',
+  'halo_pmc.c',
   'instrument.c',
   'nodeAgg.c',
   'nodeAppend.c',

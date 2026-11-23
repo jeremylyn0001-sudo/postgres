@@ -32,6 +32,7 @@
 #include "commands/tablespace.h"
 #include "executor/execdebug.h"
 #include "executor/hashjoin.h"
+#include "executor/halo_pmc.h"
 #include "executor/nodeHash.h"
 #include "executor/nodeHashjoin.h"
 #include "miscadmin.h"
@@ -144,6 +145,9 @@ MultiExecPrivateHash(HashState *node)
 	TupleTableSlot *slot;
 	ExprContext *econtext;
 	uint32		hashvalue;
+	HaloPmc		pmc;
+	bool		pmc_active;
+	volatile bool pmc_success = false;
 
 	/*
 	 * get state info from node
@@ -161,11 +165,16 @@ MultiExecPrivateHash(HashState *node)
 	 * Get all tuples from the node below the Hash node and insert into the
 	 * hash table (or temp files).
 	 */
+	pmc_active = halo_pmc_start(&pmc);
+	PG_TRY();
+	{
 	for (;;)
 	{
 		slot = ExecProcNode(outerNode);
 		if (TupIsNull(slot))
 			break;
+		if (pmc_active)
+			halo_pmc_sample_begin(&pmc);
 		/* We have to compute the hash value */
 		econtext->ecxt_outertuple = slot;
 		if (ExecHashGetHashValue(hashtable, econtext, hashkeys,
@@ -189,7 +198,17 @@ MultiExecPrivateHash(HashState *node)
 			}
 			hashtable->totalTuples += 1;
 		}
+		if (pmc_active)
+			halo_pmc_sample_end(&pmc);
 	}
+	pmc_success = true;
+	}
+	PG_FINALLY();
+	{
+		if (pmc_active)
+			halo_pmc_finish(&pmc, pmc_success);
+	}
+	PG_END_TRY();
 
 	/* resize the hash table if needed (NTUP_PER_BUCKET exceeded) */
 	if (hashtable->nbuckets != hashtable->nbuckets_optimal)
