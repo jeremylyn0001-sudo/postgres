@@ -1,11 +1,8 @@
-# PostgreSQL 16 PMC homework
+# PostgreSQL 16 性能计数器观测
 
-This branch adds Linux performance counters to the private hash-build path
-`MultiExecPrivateHash`. The `halo_pmc_list` session setting selects events from
-`public.pmc_name`, using the schema and event definitions from the course.
-The default is empty and leaves instrumentation disabled.
+本作业在 PostgreSQL 16 的私有 Hash Join 建表路径 `MultiExecPrivateHash` 中加入 CPU 性能计数器（PMC）观测。通过会话参数 `halo_pmc_list` 从 `public.pmc_name` 表选择计数器；表结构和事件配置参考课程材料。参数默认为空，即默认关闭观测。
 
-## Build
+## 编译安装
 
 ```sh
 ./configure --prefix=/path/to/isolated/pg-pmc --enable-cassert
@@ -13,14 +10,11 @@ make -j4
 make install
 ```
 
-Use a separate installation and database cluster when testing. Do not install
-over a running PostgreSQL instance. The source is based on PostgreSQL 16.
+请使用独立的安装目录和数据库集群进行测试，不要覆盖正在使用的 PostgreSQL 实例。上述路径只是示例，请根据实际环境替换。
 
-## Use
+## 使用方法
 
-Run `pmc_assignment/setup.sql` once in the test database. It creates the
-course-compatible event table; do not run it in a database where the table
-already exists.
+在测试数据库中执行一次 `pmc_assignment/setup.sql`，创建与课程示例兼容的事件定义表。如果数据库中已有 `public.pmc_name` 表，不要重复执行建表语句。当前数据库角色需要有读取该表的权限。
 
 ```sql
 SET max_parallel_workers_per_gather = 0;
@@ -29,57 +23,38 @@ SELECT count(*) FROM table_a a JOIN table_b b ON a.id = b.id;
 SET halo_pmc_list = '';
 ```
 
-Select a query plan containing `Hash Join` and a private `Hash` node. The
-server reports one INFO line per successfully opened event:
+其中 `table_a`、`table_b` 和 `id` 是示例，使用时应替换为实际表和连接列。选择执行计划中包含 `Hash Join` 和私有 `Hash` 节点的查询。每个成功打开的计数器会输出一条 INFO 信息：
 
-- `whole`: raw event count from enabling the event until the end of the hash
-  build, including per-tuple sampling overhead.
-- `enabled` and `running`: total event times in nanoseconds from the kernel.
-- `loop`: sum of the differences read before and after the hash/insert work
-  for each tuple; it excludes the call that fetches the next input tuple.
-- `samples` and `missed`: successful and unavailable per-tuple reads.
+- `whole`：从启用计数器到 Hash 建表结束的原始计数，包含逐行采样产生的开销。
+- `enabled`、`running`：内核报告的事件启用时间和实际运行时间，单位为纳秒。
+- `loop`：每行数据进行哈希计算和插入前后两次读取的差值之和，不包括获取下一行输入的调用。
+- `samples`、`missed`：逐行读取成功和未能读取的次数。
 
-Counters run continuously during the build. On x86, the fast path reads the
-perf metadata page and executes `RDPMC` only when the kernel permits it. It
-does not enable or disable counters inside the loop. The values are raw, not
-multiplex-scaled: consult `enabled`, `running`, and `missed` before comparing
-measurements. If fast reads are unavailable, loop samples are marked missed;
-the final `read()` still reports the whole-build count. Unsupported events,
-missing tables, and denied perf permissions produce warnings. They do not
-prevent an otherwise valid query from completing.
+计数器在建表期间持续运行。x86 环境下，快速路径读取 perf 元数据共享页，仅在内核允许时执行 `RDPMC`；循环内不反复启停计数器。输出为未经多路复用比例校正的原始计数，比较结果前应检查 `enabled`、`running` 和 `missed`。如果快速读取不可用，逐行采样会记为未命中；最终仍会尝试通过 `read()` 报告整个建表阶段的计数。事件不支持、表不存在或 perf 权限不足时会输出警告，正常查询仍可继续执行。
 
-The example covers private hash builds, not parallel shared hash builds. A
-`pmc_name` table must be readable by the current database role. The event
-definitions are machine dependent; raw CPU events in particular are not
-portable. Do not assume zero counts mean the workload did no work: a VM may
-not expose a usable virtual PMU even when event opening succeeds.
+当前实现只覆盖私有 Hash 建表，不覆盖并行共享 Hash 建表。事件定义与 CPU 和运行环境有关，特别是原始硬件事件不能保证跨机器通用。计数为零不一定意味着没有执行工作：虚拟机即使允许打开事件，也可能没有暴露可用的虚拟 PMU。
 
-## Tests
+## 测试
 
 ```sh
 sh pmc_assignment/test.sh /path/to/isolated/pg-pmc/bin
 ```
 
-The script creates its own temporary cluster and Unix socket, stops the server
-on exit, and prints the temporary log directory. It checks that the plan uses
-Hash Join; the query result is unchanged; missing tables, unknown events,
-invalid input, and available or denied perf events are handled. To require
-the x86 fast path, run the same script in an environment where the PostgreSQL
-process can open perf events and `RDPMC` is enabled:
+测试脚本会创建独立的临时数据库集群和 Unix socket，退出时停止测试服务器，并输出临时日志目录。测试内容包括：确认使用 Hash Join、检查查询结果不变，以及验证缺表、未知事件、无效输入和计数器可用或被拒绝时的行为。
+
+如果 PostgreSQL 测试进程有权打开性能事件，且系统允许 `RDPMC`，可要求测试必须经过 x86 快速读取路径：
 
 ```sh
 PMC_REQUIRE_FAST=1 sh pmc_assignment/test.sh /path/to/isolated/pg-pmc/bin
 ```
 
-The course development VM was tested both as the ordinary `postgres` user and
-with `CAP_PERFMON` granted only to the test process. The former reports denied
-events; the latter exercises 1000 fast reads with zero misses. On that VMware
-VM user-space cycles and instructions were zero, as also observed using
-`perf stat -e cycles:u,instructions:u`; this does not establish valid numerical
-counter accuracy. Meaningful performance validation requires a host or VM
-with a functioning PMU and appropriate permissions.
+## 已验证结果与限制
 
-Reference: Linux `perf_event_open(2)` and the `perf_event_mmap_page` metadata
-protocol in `linux/perf_event.h`. The course `halo_pmc.c`, `halo_pmc.h` and
-`创建PMC表.txt` informed the design and table schema; this branch implements a
-smaller self-contained version and does not use their original code verbatim.
+开发环境中分别使用普通 `postgres` 用户，以及只向测试进程授予 `CAP_PERFMON` 的方式运行了测试。普通用户因权限不足无法打开事件；临时授予权限后，快速路径完成了 1000 次读取，未出现未命中。
+
+该 VMware 虚拟机的用户态 `cycles` 和 `instructions` 读数为零；使用系统命令 `perf stat -e cycles:u,instructions:u` 也观察到了相同情况。因此，这次测试验证了读取流程，但不能证明计数数值准确。要进行有意义的性能验证，还需要具有可用 PMU 和相应权限的主机或虚拟机。
+
+## 参考资料
+
+- Linux `perf_event_open(2)` 手册，以及 `linux/perf_event.h` 中 `perf_event_mmap_page` 的读取协议。
+- 课程提供的 `halo_pmc.c`、`halo_pmc.h` 和《创建PMC表.txt》。本作业参考其设计和表结构，采用较精简的独立实现，并非直接照搬原代码。
