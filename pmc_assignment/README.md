@@ -57,4 +57,3 @@ PMC_REQUIRE_FAST=1 sh pmc_assignment/test.sh /path/to/isolated/pg-pmc/bin
 ## 参考资料
 
 - Linux `perf_event_open(2)` 手册，以及 `linux/perf_event.h` 中 `perf_event_mmap_page` 的读取协议。
-- 课程提供的 `halo_pmc.c`、`halo_pmc.h` 和《创建PMC表.txt》。本作业参考其设计和表结构，采用较精简的独立实现，并非直接照搬原代码。
